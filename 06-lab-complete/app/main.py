@@ -1,47 +1,127 @@
 """
-Production AI Agent — Part 6 Final Project (bản khung)
-
-Hoàn thành các TODO để đạt đủ 12 tiêu chí trong README.md, rồi kiểm tra:
-    python check_production_ready.py
-
-Bản khung này chạy được (uvicorn app.main:app) nhưng chưa đạt tiêu chí nào.
+Production AI Agent — Part 6 Final Project
 """
+import json
 import logging
+import signal
+import sys
+import time
+from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
+from app.auth import verify_api_key
+from app.config import settings
+from app.cost_guard import check_budget, record_cost
+from app.rate_limiter import check_rate_limit
+from app.redis_client import redis_healthy
 from utils.mock_llm import ask as llm_ask
 
-# TODO (tiêu chí 10 — Structured logging):
-#   Mỗi dòng log của app phải là 1 JSON object hợp lệ, vd
-#   {"ts": "...", "lvl": "INFO", "event": "request", "path": "/ask", "status": 200, "ms": 12.3}
-#   Gợi ý: tự viết logging.Formatter dùng json.dumps.
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
 
-app = FastAPI(title="Production AI Agent")
+class JsonFormatter(logging.Formatter):
+    """Format every application log line as a valid JSON object."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        payload = {
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "lvl": record.levelname,
+            "logger": record.name,
+            "msg": record.getMessage(),
+        }
+        if hasattr(record, "extra_data") and isinstance(record.extra_data, dict):
+            payload.update(record.extra_data)
+        return json.dumps(payload, ensure_ascii=False)
+
+
+handler = logging.StreamHandler(sys.stdout)
+handler.setFormatter(JsonFormatter())
+logger = logging.getLogger("agent")
+logger.setLevel(logging.INFO)
+logger.handlers = [handler]
+logger.propagate = False
+
+
+_previous_sigterm = signal.getsignal(signal.SIGTERM)
+
+
+def _on_sigterm(signum, frame):
+    logger.info("Received SIGTERM, shutting down gracefully")
+    if callable(_previous_sigterm):
+        _previous_sigterm(signum, frame)
+
+
+signal.signal(signal.SIGTERM, _on_sigterm)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    logger.info(
+        json.dumps(
+            {
+                "event": "startup",
+                "environment": settings.environment,
+                "port": settings.port,
+            }
+        )
+    )
+    yield
+    logger.info(json.dumps({"event": "shutdown"}))
+
+
+app = FastAPI(title="Production AI Agent", lifespan=lifespan)
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    logger.error(
+        json.dumps({"event": "unhandled_error", "path": request.url.path, "error": type(exc).__name__})
+    )
+    return JSONResponse(status_code=500, content={"detail": "Internal server error"})
 
 
 class AskRequest(BaseModel):
     question: str = Field(..., min_length=1, max_length=2000)
+    user_id: str | None = None
 
 
-# TODO (tiêu chí 4): GET /health — liveness: luôn trả 200 khi process còn chạy
-#                    (kể cả khi Redis chưa kết nối được)
-# TODO (tiêu chí 5): GET /ready  — readiness: 200 khi sẵn sàng, 503 khi Redis không kết nối được
+@app.get("/health")
+def health():
+    """Liveness probe — luôn trả 200 khi process còn chạy."""
+    return {"status": "ok", "environment": settings.environment}
+
+
+@app.get("/ready")
+def ready():
+    """Readiness probe — 200 khi Redis kết nối được, 503 nếu không."""
+    if not redis_healthy():
+        raise HTTPException(status_code=503, detail="Redis not ready")
+    return {"status": "ready"}
 
 
 @app.post("/ask")
-def ask(body: AskRequest):
-    # TODO (tiêu chí 6): bắt buộc header X-API-Key → thêm Depends(verify_api_key)
-    # TODO (tiêu chí 7): check_rate_limit(...) → 429 khi vượt giới hạn
-    # TODO (tiêu chí 8): check_budget() trước khi gọi LLM, record_cost(...) sau khi gọi → 402 khi hết budget
+def ask(body: AskRequest, api_key: str = Depends(verify_api_key)):
+    start = time.perf_counter()
+    check_rate_limit(api_key)
+    check_budget()
+
     answer = llm_ask(body.question)
-    return {"question": body.question, "answer": answer}
+    input_tokens = max(1, len(body.question.split()) * 2)
+    output_tokens = max(1, len(answer.split()) * 2)
+    cost = record_cost(input_tokens, output_tokens)
 
-
-# TODO (tiêu chí 11 — Graceful shutdown):
-#   Khi nhận SIGTERM: ngừng nhận request mới, xử lý xong request đang chạy rồi thoát (exit code 0).
-#   Gợi ý: dùng lifespan của FastAPI để dọn dẹp. Nếu tự đăng ký signal handler cho SIGTERM thì
-#   phải gọi lại handler cũ của uvicorn, nếu không process sẽ không bao giờ tắt.
+    elapsed_ms = round((time.perf_counter() - start) * 1000, 2)
+    logger.info(
+        json.dumps(
+            {
+                "event": "ask",
+                "path": "/ask",
+                "status": 200,
+                "ms": elapsed_ms,
+                "cost_usd": cost,
+            }
+        )
+    )
+    return {"question": body.question, "answer": answer, "cost_usd": cost}
