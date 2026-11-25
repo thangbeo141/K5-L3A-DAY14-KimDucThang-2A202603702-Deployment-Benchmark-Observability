@@ -82,8 +82,8 @@ Client (port 80 / 443)
 ## Part 3: Cloud Deployment
 
 ### Exercise 3.1 / 3.2: Deploy agent Part 6 lên Render
-- **Platform:** Render
-- **Public URL:** _(Điền sau khi deploy xong)_
+- **Platform:** Render (Docker Web Service + Render Key Value / Valkey 8)
+- **Public URL:** https://k5-l3a-day14-kimducthang-2a202603702.onrender.com
 - **Screenshots:** `screenshots/dashboard.png`, `screenshots/running.png`, `screenshots/test.png`
 
 ### So sánh `railway.toml` vs `render.yaml`
@@ -206,4 +206,5 @@ Chạy `python3 check_production_ready.py` (chế độ đầy đủ có Docker 
 ---
 
 ## AI Log
-- Sử dụng AI assistant (Antigravity) để kiểm tra môi trường WSL2/Docker (CP0), chạy kiểm tra các bài thực hành Part 1–5 (CP1–CP4), hoàn thiện các `TODO` trong `06-lab-complete/` (CP5), và kiểm tra kết quả `check_production_ready.py` đạt `PASS 12/12` (43/43 checks).
+- Sử dụng AI assistant (Antigravity) để kiểm tra môi trường WSL2/Docker (CP0), chạy kiểm tra các bài thực hành Part 1–5 (CP1–CP4), hoàn thiện các `TODO` trong `06-lab-complete/` (CP5) và kiểm tra `check_production_ready.py` đạt `PASS 12/12` (43/43 checks).
+- Sử dụng AI để hướng dẫn deploy lên Render (CP6), chạy bộ benchmark/eval local (`load_test.py`, `run_eval.py`) và sửa `KNOWLEDGE_BASE` trong `mock_llm.py` đạt 23/23 (CP7), chạy Locust headless (`scale=1`, `scale=3`), trích xuất log khớp `trace_id` (`17fd797c276c8d04c8455b1769d0fc97`) và tổng hợp số liệu thật vào `BENCHMARK_REPORT.md` (CP8).
